@@ -60,12 +60,20 @@ static bool isNewer(const String &remote, const char *local) {
   return false;
 }
 
+static void otaAuthHeader(HTTPClient &http) {
+  if (settings.otaToken[0]) {
+    String auth = String("token ") + settings.otaToken;
+    http.addHeader("Authorization", auth);   // GitHub PAT — repo private
+  }
+}
+
 static bool httpGetString(const String &url, String &out) {
   WiFiClientSecure client;
   client.setInsecure();                    // ไม่ตรวจใบรับรอง (ยอมรับได้สำหรับ manifest สาธารณะ)
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if (!http.begin(client, url)) return false;
+  otaAuthHeader(http);
   int code = http.GET();
   if (code != HTTP_CODE_OK) { http.end(); return false; }
   out = http.getString();
@@ -116,6 +124,7 @@ bool otaCheckAndUpdate(OtaProgressCb cb) {
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if (!http.begin(client, binUrl)) { say(cb, "Cannot open bin URL"); otaWifiOff(); return false; }
+  otaAuthHeader(http);
   int code = http.GET();
   int len = http.getSize();
   if (code != HTTP_CODE_OK || len <= 0) { say(cb, "Download failed"); http.end(); otaWifiOff(); return false; }

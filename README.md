@@ -1,4 +1,4 @@
-# S3 Watch — เฟิร์มแวร์ v0.2.0
+# S3 Watch — เฟิร์มแวร์ v0.2.1
 
 นาฬิกา + เครื่องบันทึกเสียง บน **Waveshare ESP32-S3-Touch-AMOLED-2.06**
 เขียนตามสเปกที่ล็อกไว้ในเอกสาร `s3 watch.docx`
@@ -140,6 +140,7 @@ wifiEnabled=0
 wifiSsid=ชื่อไวไฟ
 wifiPass=รหัสผ่าน
 otaUrl=https://raw.githubusercontent.com/<user>/<repo>/main/firmware.txt
+otaToken=                # GitHub PAT (github_pat_...) — ตองเฉพาะ repo private; ทิ้งว่าง = repo public
 tzMinutes=420
 cpuMhz=80
 ```
@@ -164,6 +165,11 @@ url=https://github.com/<user>/<repo>/releases/download/v0.2.1/S3Watch.bin
 
 ไฟล์ `.bin` ได้จาก Arduino IDE → **Sketch → Export Compiled Binary**
 เครื่องจะอัปเดตเฉพาะตอนกด `Check update` ในเมนู แล้วปิด WiFi ทันทีที่เสร็จ
+
+**repo private (v0.2.1+):** ใส่ `otaToken=` ใน `/settings.cfg` — ใช้ GitHub PAT
+(scope `public_repo` ก็พอ สำหรับ repo private ของตัวเอง) เครื่องจะส่ง header
+`Authorization: token <PAT>` ตอนอ่าน manifest + ดาวน์โหลด .bin
+⚠️ PAT จะเก็บเป็น plain text บน SD/NVS → อย่าใซ้ PAT ท่ีมี scope กว้างเกิน
 
 ---
 

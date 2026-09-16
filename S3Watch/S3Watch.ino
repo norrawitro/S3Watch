@@ -50,7 +50,7 @@
 //         PCF85063, AXP2101, microSD, I2S mic)
 // ============================================================================
 
-#define FW_VERSION "0.2.0"
+#define FW_VERSION "0.2.1"
 
 // ─────────────── สวิตช์คอมไพล์ ───────────────
 // UI ของเมนู Settings : 1 = LVGL (ตามสเปก, ต้องติดตั้ง lvgl + lv_conf.h)
@@ -176,6 +176,7 @@ struct Settings {
   char     wifiSsid[33];
   char     wifiPass[65];
   char     otaUrl[160];      // URL ของไฟล์ manifest บน GitHub
+  char     otaToken[65];     // GitHub PAT สำหรับ repo private (ไม่ตอง = repo public)
 
   // ระบบ
   int16_t  tzMinutes;        // เขตเวลา (นาที) ไทย = 420
@@ -622,6 +623,7 @@ void settingsDefaults() {
   settings.wifiSsid[0]    = 0;
   settings.wifiPass[0]    = 0;
   settings.otaUrl[0]      = 0;
+  settings.otaToken[0]    = 0;
   settings.tzMinutes      = DEF_TZ_MIN;
   settings.cpuMhz         = DEF_CPU_MHZ;
 }
@@ -667,6 +669,7 @@ static void applyKV(const String &key, const String &val) {
   else if (key == "wifiSsid")     strlcpy(settings.wifiSsid, val.c_str(), sizeof(settings.wifiSsid));
   else if (key == "wifiPass")     strlcpy(settings.wifiPass, val.c_str(), sizeof(settings.wifiPass));
   else if (key == "otaUrl")       strlcpy(settings.otaUrl,  val.c_str(), sizeof(settings.otaUrl));
+  else if (key == "otaToken")     strlcpy(settings.otaToken, val.c_str(), sizeof(settings.otaToken));
   else if (key == "tzMinutes")    settings.tzMinutes      = val.toInt();
   else if (key == "cpuMhz")       settings.cpuMhz         = val.toInt();
 }
@@ -710,6 +713,7 @@ static bool saveToSd() {
   f.printf("wifiSsid=%s\n",     settings.wifiSsid);
   f.printf("wifiPass=%s\n",     settings.wifiPass);
   f.printf("otaUrl=%s\n",       settings.otaUrl);
+  f.printf("otaToken=%s\n",     settings.otaToken);
   f.printf("tzMinutes=%d\n",    settings.tzMinutes);
   f.printf("cpuMhz=%u\n",       settings.cpuMhz);
   f.close();
@@ -1537,12 +1541,20 @@ static bool isNewer(const String &remote, const char *local) {
   return false;
 }
 
+static void otaAuthHeader(HTTPClient &http) {
+  if (settings.otaToken[0]) {
+    String auth = String("token ") + settings.otaToken;
+    http.addHeader("Authorization", auth);   // GitHub PAT — repo private
+  }
+}
+
 static bool httpGetString(const String &url, String &out) {
   WiFiClientSecure client;
   client.setInsecure();                    // ไม่ตรวจใบรับรอง (ยอมรับได้สำหรับ manifest สาธารณะ)
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if (!http.begin(client, url)) return false;
+  otaAuthHeader(http);
   int code = http.GET();
   if (code != HTTP_CODE_OK) { http.end(); return false; }
   out = http.getString();
@@ -1593,6 +1605,7 @@ bool otaCheckAndUpdate(OtaProgressCb cb) {
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if (!http.begin(client, binUrl)) { say(cb, "Cannot open bin URL"); otaWifiOff(); return false; }
+  otaAuthHeader(http);
   int code = http.GET();
   int len = http.getSize();
   if (code != HTTP_CODE_OK || len <= 0) { say(cb, "Download failed"); http.end(); otaWifiOff(); return false; }

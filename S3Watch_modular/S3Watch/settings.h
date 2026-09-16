@@ -30,6 +30,7 @@ struct Settings {
   char     wifiSsid[33];
   char     wifiPass[65];
   char     otaUrl[160];      // URL ของไฟล์ manifest บน GitHub
+  char     otaToken[65];     // GitHub PAT สำหรับ repo private (ไม่ตอง = repo public)
 
   // ระบบ
   int16_t  tzMinutes;        // เขตเวลา (นาที) ไทย = 420

@@ -27,6 +27,7 @@ void settingsDefaults() {
   settings.wifiSsid[0]    = 0;
   settings.wifiPass[0]    = 0;
   settings.otaUrl[0]      = 0;
+  settings.otaToken[0]    = 0;
   settings.tzMinutes      = DEF_TZ_MIN;
   settings.cpuMhz         = DEF_CPU_MHZ;
 }
@@ -72,6 +73,7 @@ static void applyKV(const String &key, const String &val) {
   else if (key == "wifiSsid")     strlcpy(settings.wifiSsid, val.c_str(), sizeof(settings.wifiSsid));
   else if (key == "wifiPass")     strlcpy(settings.wifiPass, val.c_str(), sizeof(settings.wifiPass));
   else if (key == "otaUrl")       strlcpy(settings.otaUrl,  val.c_str(), sizeof(settings.otaUrl));
+  else if (key == "otaToken")     strlcpy(settings.otaToken, val.c_str(), sizeof(settings.otaToken));
   else if (key == "tzMinutes")    settings.tzMinutes      = val.toInt();
   else if (key == "cpuMhz")       settings.cpuMhz         = val.toInt();
 }
@@ -115,6 +117,7 @@ static bool saveToSd() {
   f.printf("wifiSsid=%s\n",     settings.wifiSsid);
   f.printf("wifiPass=%s\n",     settings.wifiPass);
   f.printf("otaUrl=%s\n",       settings.otaUrl);
+  f.printf("otaToken=%s\n",     settings.otaToken);
   f.printf("tzMinutes=%d\n",    settings.tzMinutes);
   f.printf("cpuMhz=%u\n",       settings.cpuMhz);
   f.close();

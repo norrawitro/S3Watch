@@ -120,6 +120,10 @@ struct MenuItem;
 #define SD_CS         17
 #define SD_FREQ_HZ    20000000UL   // อย่าสูงกว่านี้ (ตามข้อควรระวังในเอกสาร)
 
+// ─────────────── IMU (QMI8658) ───────────────
+#define IMU_INT_SEL SensorQMI8658::INTERRUPT_PIN_1
+#define FACE_SIGN   1.0f   // ถ้าหงายจอแล้ว Z axis กลับด้าน ให้เปลี่ยนเป็น -1.0f
+
 // ─────────────── I2S ───────────────
 #define I2S_MCLK      16
 #define I2S_BCLK      41
@@ -653,9 +657,9 @@ void settingsDefaults() {
   settings.flushPct       = DEF_FLUSH_PCT;
   settings.ringMB         = DEF_RING_MB;
   settings.wifiEnabled    = false;
-  settings.wifiSsid[0]    = 0;
-  settings.wifiPass[0]    = 0;
-  settings.otaUrl[0]      = 0;
+  settings.wifiSsid[0]    = 0;  // ตั้งเอง: เข้า Settings → WiFi SSID
+  settings.wifiPass[0]    = 0;  // ตั้งเอง: เข้า Settings → WiFi Password
+  strlcpy(settings.otaUrl, "https://raw.githubusercontent.com/norrawitro/S3Watch/main/firmware.txt", sizeof(settings.otaUrl));
   settings.tzMinutes      = DEF_TZ_MIN;
   settings.cpuMhz         = DEF_CPU_MHZ;
 }
@@ -947,21 +951,18 @@ void faceShowToast(const char *msg) {
 // ---------- imu_wake.cpp ----------
 #include <math.h>
 
-// ถ้าขยับแล้วไม่ตื่น ให้ลองเปลี่ยนเป็น INTERRUPT_PIN_2
-#define IMU_INT_SEL SensorQMI8658::INTERRUPT_PIN_1
-// ถ้าหงายจอแล้วไม่สว่าง (แกน Z กลับด้านบนบอร์ดจริง) ให้เปลี่ยนเป็น -1.0f
-#define FACE_SIGN   1.0f
-
 RTC_DATA_ATTR static int s_intIdle = 1;
 
 void imuConfigureWom() {
   if (!hwImuOk() || !settings.wristWake) return;
-  uint32_t t0 = millis();
-  while (Wire.status() != I2C_ERROR_OK && millis() - t0 < 100) delay(5);
   if (!i2cPresent(QMI8658_L_SLAVE_ADDRESS)) return;
-  imu.configWakeOnMotion(settings.womThresholdMg,
-                         SensorQMI8658::ACC_ODR_LOWPOWER_21Hz,
-                         IMU_INT_SEL);
+  uint32_t t0 = millis();
+  while (millis() - t0 < 100) {
+    if (imu.configWakeOnMotion(settings.womThresholdMg,
+                               SensorQMI8658::ACC_ODR_LOWPOWER_21Hz,
+                               IMU_INT_SEL)) break;
+    delay(5);
+  }
   imuLatchIntIdle();
 }
 
@@ -2183,26 +2184,41 @@ void setup() {
   bool fromDeep = powerWokeFromDeepSleep();
 
   Serial.begin(115200);
-  if (!fromDeep) delay(300);              // ให้ USB CDC ขึ้นก่อนตอนเปิดเครื่องใหม่
+  if (!fromDeep) delay(500);
+  Serial.println("\n[BOOT] Starting S3 Watch...");
+
   setCpuFrequencyMhz(80);
+  Serial.println("[BOOT] CPU frequency set to 80 MHz");
 
   hwInitPins();
+  Serial.println("[BOOT] Pins initialized");
+
   hwInitI2C();
+  Serial.println("[BOOT] I2C initialized");
+
   hwInitPmu();
-  hwInitSd();                             // ต้องมาก่อนโหลด settings
+  hwInitSd();
+  Serial.println("[BOOT] PMU & SD initialized");
 
   settingsLoad();
   setCpuFrequencyMhz(settings.cpuMhz);
+  Serial.printf("[BOOT] Settings loaded, CPU %u MHz\n", settings.cpuMhz);
 
   hwInitDisplay(false);
+  Serial.println("[BOOT] Display initialized");
+
   hwInitRtc();
   hwInitImu();
   imuConfigureWom();
+  Serial.printf("[BOOT] RTC=%s, IMU=%s\n", hwRtcOk() ? "OK" : "FAIL", hwImuOk() ? "OK" : "FAIL");
+
   touchInit();
   uiInit();
+  Serial.println("[BOOT] Touch & UI initialized");
 
 #if ENABLE_AUDIO
   audioInit();
+  Serial.println("[BOOT] Audio initialized");
 #endif
   modulesInit();
 
@@ -2210,15 +2226,17 @@ void setup() {
   faceInvalidate();
   faceDrawFull(t);
   s_lastMin = t.tm_min;
+  Serial.printf("[BOOT] Display updated: %04d-%02d-%02d %02d:%02d:%02d\n",
+                t.tm_year+1900, t.tm_mon+1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
 
-  // ตื่นจาก deep sleep ด้วย timer → อัปเดตเวลาเงียบ ๆ ไม่ต้องเปิดจอสว่าง
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
   if (!fromDeep || cause == ESP_SLEEP_WAKEUP_EXT1) setBright(true);
   else                                             setBright(false);
 
-  Serial.printf("[boot] S3 Watch %s | %s | mode=%s\n", FW_VERSION,
+  Serial.printf("[BOOT] S3 Watch %s ready! | %s | mode=%s\n", FW_VERSION,
                 fromDeep ? "ตื่นจาก deep sleep" : "เปิดเครื่อง",
                 powerModeName(powerPickMode(false, false)));
+  Serial.println("═══════════════════════════════════════\n");
 }
 
 // ============================================================================

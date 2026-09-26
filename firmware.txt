@@ -1,0 +1,2 @@
+version=0.2.1
+url=https://github.com/norrawitro/S3Watch/releases/download/v0.2.1/S3Watch.bin

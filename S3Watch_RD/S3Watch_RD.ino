@@ -58,6 +58,8 @@
 #define I2S_DIN 42
 #define PIN_PA 46
 #define ADDR_PMU 0x34
+#define ADDR_TOUCH 0x38                  // FT3168 (pin_config.h / Arduino_FT3x68.h ของผู้ผลิต)
+#define TP_RST 9
 #define MIC_GAIN ((es8311_mic_gain_t)3)   // เท่าตัวอย่างผู้ผลิต (0–7)
 
 Arduino_DataBus *bus = new Arduino_ESP32QSPI(LCD_CS, LCD_SCLK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
@@ -84,6 +86,16 @@ static void pmuInit() {
   pmuWrite(0x30, pmuRead(0x30) | 0x01);   // เปิดวัดแรงดันแบต (ADC_CHANNEL_CTRL bit0)
   pmuWrite(0x68, pmuRead(0x68) | 0x01);   // เปิดตรวจแบต (BAT_DET_CTRL bit0)
   pmuWrite(0x18, pmuRead(0x18) | 0x08);   // เปิดเกจวัด % (CHARGE_GAUGE_WDT_CTRL bit3)
+  // ปุ่ม PWR: ตัวอย่างผู้ผลิต (05_LVGL_AXP2101_ADC_Data) เปิด IRQ PKEY_SHORT แล้วอ่านสถานะทาง I2C (ไม่มีขา IRQ ต่อ ESP32)
+  // PKEY_SHORT = bit 11 → INTEN2 (0x41) bit3 · สถานะ INTSTS2 (0x49) bit3 · ล้างโดยเขียน 1
+  pmuWrite(0x41, pmuRead(0x41) | 0x08);
+  pmuWrite(0x49, 0x08);
+}
+static bool pwrPressed() {               // กด PWR สั้น ๆ ตั้งแต่ครั้งก่อน? (อ่านแล้วล้าง)
+  uint8_t st = pmuRead(0x49);
+  if (st == 0xFF || !(st & 0x08)) return false;
+  pmuWrite(0x49, 0x08);
+  return true;
 }
 
 static Batt readBatt() {
@@ -212,6 +224,7 @@ void setup() {
   Serial.printf("\n[S3Watch_RD] fw %lu  RD1 %d bands @ %d Hz\n", (unsigned long)FW_VERSION, RD1_BANDS, RD_SAMPLE_RATE);
   Wire.begin(I2C_SDA, I2C_SCL, 400000);
   pmuInit();
+  pinMode(TP_RST, OUTPUT); digitalWrite(TP_RST, LOW); delay(10); digitalWrite(TP_RST, HIGH); delay(60);   // ปลดรีเซ็ตทัช
   rtcOk = rtc.begin(Wire, I2C_SDA, I2C_SCL);
   imuOk = imu.begin(Wire, QMI8658_L_SLAVE_ADDRESS, I2C_SDA, I2C_SCL);
   if (imuOk) {
@@ -241,6 +254,70 @@ void setup() {
 
 static int16_t st[RD_FRAME_N * 2], pcm[RD_FRAME_N];
 static uint32_t seq = 0;
+
+// ---------- ทัช (FT3168) ----------
+// ทะเบียนตามไดรเวอร์ผู้ผลิต Arduino_FT3x68.h: 0x02 = FingerNum (จำนวนนิ้ว)
+static bool touched() {
+  Wire.beginTransmission(ADDR_TOUCH); Wire.write(0x02);
+  if (Wire.endTransmission(false) != 0) return false;
+  Wire.requestFrom(ADDR_TOUCH, 1);
+  return Wire.available() && (Wire.read() & 0x0F) > 0;
+}
+
+// ---------- โหมดประหยัดพลังงาน (ผู้ใช้สั่ง 2026-10-18) ----------
+// ไม่แตะจอครบ 5 นาที (หรือกด PWR) → นาฬิกาเข็มเส้น 2 px บนพื้นดำ · ปิด Wi-Fi + ไมค์ · หลับ (light sleep) ทีละ 1 วิ
+// ตื่นมาอ่านปุ่ม PWR (AXP2101) · เปลี่ยนนาทีค่อยวาดใหม่ · กด PWR = ตื่น (เริ่มเครื่องใหม่ให้ระบบเสียง/Wi-Fi กลับมาครบ)
+#define IDLE_MS (5UL * 60UL * 1000UL)
+#define FACE_CX (LCD_W / 2)
+#define FACE_CY (LCD_H / 2)
+#define FACE_R  150                      // จอขอบมน → เว้นขอบ
+static void es7210Stop() {               // ลำดับตาม es7210_stop() ของ Espressif
+  for (int i = 0; i < 6; i++) es7Write(0x47 + i, 0xFF);
+  es7Write(0x40, 0xC0); es7Write(0x01, 0x7F); es7Write(0x06, 0x07);
+}
+static void handLine(float deg, int len, uint16_t c) {   // เส้นกว้าง 2 px
+  float a = deg * PI / 180.0f;
+  int x = FACE_CX + lroundf(len * sinf(a)), y = FACE_CY - lroundf(len * cosf(a));
+  gfx->drawLine(FACE_CX, FACE_CY, x, y, c);
+  gfx->drawLine(FACE_CX + 1, FACE_CY, x + 1, y, c);
+}
+static void faceTicks() {
+  for (int i = 0; i < 12; i++) {
+    float a = i * 30 * PI / 180.0f;
+    int in = (i % 3 == 0) ? FACE_R - 16 : FACE_R - 8;
+    for (int w = 0; w < 2; w++)
+      gfx->drawLine(FACE_CX + w + lroundf(in * sinf(a)), FACE_CY - lroundf(in * cosf(a)),
+                    FACE_CX + w + lroundf(FACE_R * sinf(a)), FACE_CY - lroundf(FACE_R * cosf(a)), RGB565_DARKGREY);
+  }
+}
+static void nowHM(int &h, int &m) {
+  if (rtcOk) { RTC_DateTime d = rtc.getDateTime(); h = d.getHour(); m = d.getMinute(); return; }
+  time_t t = time(nullptr); struct tm tmv; localtime_r(&t, &tmv); h = tmv.tm_hour; m = tmv.tm_min;
+}
+static void enterSaver() {
+  Serial.println("[power] saver: clock only (press PWR to wake)");
+  Serial.flush();
+  WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
+  i2s.end(); es7210Stop();
+  gfx->fillScreen(RGB565_BLACK);
+  gfx->setBrightness(60);
+  faceTicks();
+  int lh = -1, lm = -1;
+  pwrPressed();                          // ล้างการกดที่ค้างอยู่ (ปุ่มที่พาเข้าโหมดนี้)
+  for (;;) {
+    int h, m; nowHM(h, m);
+    if (m != lm || h != lh) {
+      if (lm >= 0) { handLine((lh % 12) * 30 + lm * 0.5f, 85, RGB565_BLACK); handLine(lm * 6, 130, RGB565_BLACK); }   // ลบเข็มเก่า
+      faceTicks();
+      handLine((h % 12) * 30 + m * 0.5f, 85, RGB565_WHITE);
+      handLine(m * 6, 130, RGB565_WHITE);
+      lh = h; lm = m;
+    }
+    if (pwrPressed()) { Serial.println("[power] PWR -> wake"); delay(50); ESP.restart(); }
+    esp_sleep_enable_timer_wakeup(1000000ULL);   // หลับ 1 วิ แล้วตื่นมาเช็คปุ่ม/นาที
+    esp_light_sleep_start();
+  }
+}
 
 // ---------- WKW ----------
 // ไม่ใส่ "device" (ถ้าใส่ต้องตรงชื่อที่ลงทะเบียน ไม่ตรง = 403) — เซิร์ฟเวอร์รู้อุปกรณ์จาก key อยู่แล้ว
@@ -375,8 +452,11 @@ void loop() {
 
   static uint32_t lastDraw = 0, lastLog = 0;
   static Batt bt = readBatt();
+  static uint32_t lastTouch = millis();
   if (millis() - lastDraw >= 100) {
     lastDraw = millis();
+    if (touched()) lastTouch = millis();
+    if (millis() - lastTouch >= IDLE_MS || pwrPressed()) enterSaver();   // ไม่แตะ 5 นาที หรือกด PWR → โหมดประหยัด
     drawBars(f, rd2);
     drawTop(f, rd2, bt);
   }

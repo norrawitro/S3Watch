@@ -5,6 +5,7 @@
 // แบต: อ่านจาก AXP2101 (เลขรีจิสเตอร์ตาม XPowersLib) — ขา 9 เป็นรีเซ็ตทัช ไม่ใช่ ADC แบต
 #include <Wire.h>
 #include <ESP_I2S.h>
+#include "driver/gpio.h"
 #include <Arduino_GFX_Library.h>
 #include <SensorPCF85063.hpp>
 #include <SensorQMI8658.hpp>
@@ -315,8 +316,13 @@ static void enterSaver() {
       lh = h; lm = m;
     }
     if (pwrPressed()) { Serial.println("[power] PWR -> wake"); delay(50); ESP.restart(); }
+    // fw 2610182015: จอดำทั้งที่วาดแล้ว — ระหว่าง light sleep ขาที่ไม่ได้ hold จะถูกปล่อยลอย → ขารีเซ็ตจอ (8) ลง LOW = จอรีเซ็ต
+    // → ค้างสถานะขารีเซ็ตจอ / CS จอ / รีเซ็ตทัช / แอมป์ ไว้ระหว่างหลับ
+    const gpio_num_t keep[] = {(gpio_num_t)LCD_RST, (gpio_num_t)LCD_CS, (gpio_num_t)TP_RST, (gpio_num_t)PIN_PA};
+    for (gpio_num_t g : keep) { gpio_sleep_sel_dis(g); gpio_hold_en(g); }
     esp_sleep_enable_timer_wakeup(1000000ULL);   // หลับ 1 วิ แล้วตื่นมาเช็คปุ่ม/นาที
     esp_light_sleep_start();
+    for (gpio_num_t g : keep) gpio_hold_dis(g);
   }
 }
 
@@ -472,7 +478,7 @@ void loop() {
       if (millis() - lastTouch > 2000) Serial.printf("[touch] (idle was %lu s)\n", (unsigned long)((millis() - lastTouch) / 1000));
       lastTouch = millis();
     }
-    if (millis() - lastTouch >= IDLE_MS || pwrPressed()) enterSaver();   // ไม่แตะ 5 นาที หรือกด PWR → โหมดประหยัด
+    if (millis() - lastTouch >= IDLE_MS || (millis() > 3000 && pwrPressed())) enterSaver();   // 3 วิแรกหลังเปิด ไม่นับ PWR (กันกดปลุกแล้วหลับซ้ำ)   // ไม่แตะ 5 นาที หรือกด PWR → โหมดประหยัด
     drawBars(f, rd2);
     drawTop(f, rd2, bt);
   }

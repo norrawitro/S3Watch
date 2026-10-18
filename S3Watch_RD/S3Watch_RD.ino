@@ -12,7 +12,7 @@
 #include "rd2_live.h"
 #include "batt.h"
 
-#define FW_VERSION 1
+#define FW_VERSION 2   // 0.3.1
 // ---- ขา (ผู้ผลิต) ----
 #define LCD_D0 4
 #define LCD_D1 5
@@ -67,7 +67,43 @@ static Batt readBatt() {
 }
 
 // ---------- ไมค์ ----------
-static bool micInit() {
+// v0.3.1: ไมค์จริงอยู่ที่ ES7210 (เฟิร์มแวร์โรงงานใช้ ES7210 รับเสียง, ES8311 เล่นเสียง)
+// ลำดับรีจิสเตอร์ตาม esp_codec_dev/device/es7210/es7210.c (Espressif): open → mic_select(MIC1|MIC2) → gain 30 dB
+// → set_fs (16 บิต, I2S ปกติ) → start · โหมด slave (ESP32 ส่ง MCLK/BCLK/WS) → ไม่ต้องตั้งตัวหารนาฬิกา
+#define ADDR_ES7210 0x40
+static bool es7Write(uint8_t r, uint8_t v) { Wire.beginTransmission(ADDR_ES7210); Wire.write(r); Wire.write(v); return Wire.endTransmission() == 0; }
+static uint8_t es7Read(uint8_t r) {
+  Wire.beginTransmission(ADDR_ES7210); Wire.write(r);
+  if (Wire.endTransmission(false) != 0) return 0;
+  Wire.requestFrom(ADDR_ES7210, 1);
+  return Wire.available() ? Wire.read() : 0;
+}
+static void es7Bits(uint8_t r, uint8_t mask, uint8_t v) { es7Write(r, (es7Read(r) & ~mask) | (v & mask)); }
+static bool es7210Init() {
+  bool ok = es7Write(0x00, 0xFF);                 // reset
+  ok &= es7Write(0x00, 0x41);
+  es7Write(0x01, 0x3F);
+  es7Write(0x09, 0x30); es7Write(0x0A, 0x30);
+  es7Write(0x23, 0x2A); es7Write(0x22, 0x0A); es7Write(0x20, 0x0A); es7Write(0x21, 0x2A);
+  es7Bits(0x08, 0x01, 0x00);                      // slave
+  es7Write(0x40, 0x43); es7Write(0x41, 0x70); es7Write(0x42, 0x70);
+  es7Write(0x07, 0x20); es7Write(0x02, 0xC1);
+  for (int i = 0; i < 4; i++) es7Bits(0x43 + i, 0x10, 0x00);   // mic_select: ปิดทุกตัวก่อน
+  es7Write(0x4B, 0xFF); es7Write(0x4C, 0xFF);
+  es7Bits(0x01, 0x0B, 0x00); es7Write(0x4B, 0x00);             // MIC1 + MIC2
+  es7Bits(0x43, 0x10, 0x10); es7Bits(0x44, 0x10, 0x10);
+  es7Write(0x12, 0x00);                           // ไม่ใช้ TDM (2 ไมค์ = I2S สเตอริโอ)
+  es7Bits(0x43, 0x0F, 0x0A); es7Bits(0x44, 0x0F, 0x0A);        // gain 30 dB
+  uint8_t off = es7Read(0x01);
+  es7Bits(0x11, 0xE0, 0x60);                      // 16 บิต
+  es7Bits(0x11, 0x03, 0x00);                      // รูปแบบ I2S ปกติ
+  es7Write(0x01, off); es7Write(0x06, 0x00); es7Write(0x40, 0x43);   // start
+  for (int i = 0; i < 4; i++) es7Write(0x47 + i, 0x08);
+  es7Write(0x40, 0x43); es7Write(0x00, 0x71); es7Write(0x00, 0x41);
+  return ok;
+}
+
+static bool micInitEs8311() {   // v0.3.0 — ให้เสียงเป็นศูนย์ล้วนบนนาฬิกาจริง (เก็บไว้อ้างอิง ไม่ได้เรียกใช้)
   es8311_handle_t h = es8311_create(0, ES8311_ADDRRES_0);
   if (!h) return false;
   const es8311_clock_config_t clk = {false, false, true, RD_SAMPLE_RATE * 256, RD_SAMPLE_RATE};
@@ -85,12 +121,12 @@ static void drawStatic() {
   gfx->fillScreen(RGB565_BLACK);
   gfx->setTextColor(RGB565_DARKGREY, RGB565_BLACK);
   gfx->setTextSize(2);
-  gfx->setCursor(20, 470); gfx->print("RD1 32 bands  0..16 kHz");
+  gfx->setCursor(67, 450); gfx->print("RD1 32 bands  0..16 kHz");
   memset(shown, 0, sizeof(shown));
 }
 // แถบ 32 ช่วง: y 150..450 · ค่า RD1 100..255 → 0..300 px
 static void drawBars(const Rd1Frame &f, const Rd2Live &r2) {
-  const int x0 = 13, bw = 12, y1 = 450, hmax = 300;
+  const int x0 = 45, bw = 10, y1 = 435, hmax = 265;   // จอขอบมน: เว้นขอบซ้ายขวา ~45 px, ล่าง ~65 px
   for (int b = 0; b < RD1_BANDS; b++) {
     int h = constrain(((int)f.band[b] - 100) * hmax / 155, 0, hmax);
     int x = x0 + b * bw;
@@ -102,27 +138,27 @@ static void drawBars(const Rd1Frame &f, const Rd2Live &r2) {
 static void drawTop(const Rd1Frame &f, const Rd2Live &r2, const Batt &bt) {
   char s[48];
   gfx->setTextSize(4); gfx->setTextColor(RGB565_WHITE, RGB565_BLACK);
-  gfx->setCursor(20, 20);
+  gfx->setCursor(55, 50);
   if (rtcOk) { RTC_DateTime d = rtc.getDateTime(); snprintf(s, sizeof(s), "%02d:%02d", d.getHour(), d.getMinute()); }
   else strcpy(s, "--:--");
   gfx->print(s);
-  gfx->setTextSize(2); gfx->setCursor(240, 20);
+  gfx->setTextSize(2); gfx->setCursor(235, 50);
   if (bt.present) snprintf(s, sizeof(s), "%3d%% %c  ", bt.pct, bt.charging ? '+' : ' ');
   else strcpy(s, "no batt ");
   gfx->print(s);
-  gfx->setCursor(240, 45); snprintf(s, sizeof(s), "%4dmV", bt.mv); gfx->print(s);
-  gfx->setTextSize(4); gfx->setCursor(20, 80);
+  gfx->setCursor(235, 72); snprintf(s, sizeof(s), "%4dmV", bt.mv); gfx->print(s);
+  gfx->setTextSize(4); gfx->setCursor(55, 110);
   if (f.f0_cents) {
     int m = (f.f0_cents + 50) / 100, c = f.f0_cents - m * 100;
     snprintf(s, sizeof(s), "%-2s%d %+3d  ", NOTE[m % 12], m / 12 - 1, c);
   } else strcpy(s, "--       ");
   gfx->setTextColor(f.f0_cents ? RGB565_GREEN : RGB565_DARKGREY, RGB565_BLACK); gfx->print(s);
-  gfx->setTextSize(2); gfx->setCursor(240, 80);
+  gfx->setTextSize(2); gfx->setCursor(280, 110);
   gfx->setTextColor(r2.inEvent ? RGB565_ORANGE : RGB565_WHITE, RGB565_BLACK);
   if (r2.learning()) snprintf(s, sizeof(s), "learning  ");
   else snprintf(s, sizeof(s), "ev %-5lu", (unsigned long)r2.events);
   gfx->print(s);
-  gfx->setCursor(240, 105); snprintf(s, sizeof(s), "%4.1f dB ", r2.score); gfx->print(s);
+  gfx->setCursor(280, 132); snprintf(s, sizeof(s), "%4.1f dB ", r2.score); gfx->print(s);
 }
 
 static void selfTest() {
@@ -152,15 +188,16 @@ void setup() {
   i2s.setPins(I2S_BCLK, I2S_WS, I2S_DOUT, I2S_DIN, I2S_MCLK);
   if (!i2s.begin(I2S_MODE_STD, RD_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH))
     Serial.println("[i2s] begin failed");
-  micOk = micInit();
+  micOk = es7210Init();
   pinMode(PIN_PA, OUTPUT); digitalWrite(PIN_PA, LOW);   // ไม่ใช้ลำโพง
-  Serial.printf("[mic] es8311 %s  rtc %s\n", micOk ? "ok" : "FAIL", rtcOk ? "ok" : "FAIL");
+  Serial.printf("[mic] es7210 %s  rtc %s\n", micOk ? "ok" : "FAIL", rtcOk ? "ok" : "FAIL");
 }
 
 static int16_t st[RD_FRAME_N * 2], pcm[RD_FRAME_N];
 static uint32_t seq = 0;
 
 void loop() {
+  if (Serial.available() && Serial.read() == 't') selfTest();   // พิมพ์ t = ทดสอบ RD1 ในตัวซ้ำ
   size_t got = i2s.readBytes((char *)st, sizeof(st));
   uint8_t flags = 0;
   if (got < sizeof(st)) { memset((uint8_t *)st + got, 0, sizeof(st) - got); flags |= RD1_FLAG_GAP; }

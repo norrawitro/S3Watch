@@ -412,6 +412,7 @@ static void otaSay(const char *m) {
 static void otaProg(int pct) { char m[24]; snprintf(m, sizeof(m), "download %d%%", pct); otaSay(m); }
 static bool wifiTry(const char *ssid, const char *pass) {
   if (!ssid[0]) return false;
+  WiFi.disconnect(true); delay(100);     // ล้างการต่อที่ค้าง (กัน "sta is connecting, cannot set config")
   WiFi.mode(WIFI_STA); WiFi.begin(ssid, pass);
   for (int i = 0; i < 150 && WiFi.status() != WL_CONNECTED; i++) delay(100);   // รอสูงสุด 15 วิ
   return WiFi.status() == WL_CONNECTED;
@@ -419,7 +420,17 @@ static bool wifiTry(const char *ssid, const char *pass) {
 static void doUpdate() {
   i2s.end();                             // หยุดอ่านเสียงระหว่างอัปเดต
   otaSay("WiFi connecting...");
-  if (!wifiTry(WIFI_SSID, WIFI_PASS) && !wifiTry(WIFI_SSID2, WIFI_PASS2)) otaSay("WiFi failed (secrets.h?)");
+  // v fw 2610181933: OTA ล้มเพราะตัดการต่อเดิมแล้วลองวงหลัก (มองไม่เห็น) ก่อน → ต่ออยู่แล้วใช้เลย · ไม่งั้นลองวงที่มองเห็นก่อน
+  bool ok = WiFi.status() == WL_CONNECTED;
+  if (!ok) {
+    int n = WiFi.scanNetworks();
+    bool mainSeen = false;
+    for (int i = 0; i < n; i++) if (WiFi.SSID(i) == WIFI_SSID) mainSeen = true;
+    WiFi.scanDelete();
+    ok = mainSeen ? (wifiTry(WIFI_SSID, WIFI_PASS) || wifiTry(WIFI_SSID2, WIFI_PASS2))
+                  : (wifiTry(WIFI_SSID2, WIFI_PASS2) || wifiTry(WIFI_SSID, WIFI_PASS));
+  }
+  if (!ok) otaSay("WiFi failed (secrets.h?)");
   else if (otaPull(otaSay, otaProg)) { delay(800); ESP.restart(); }
   WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
   delay(2500);

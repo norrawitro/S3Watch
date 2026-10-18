@@ -25,6 +25,7 @@ BIN="build/$SKETCH.ino.bin"
 FILE="$DEVICE/${SKETCH}_$VER.bin"
 SIZE=$(stat -c %s "$BIN")
 MD5=$(md5sum "$BIN" | cut -d' ' -f1)
+git -C "$OTA_REPO" pull -q --rebase origin main   # เซสชัน ES3C28P ก็ push ที่นี่ — ดึงก่อนกันชน
 mkdir -p "$OTA_REPO/$DEVICE"
 cp "$BIN" "$OTA_REPO/$FILE"
 cat > "$OTA_REPO/$DEVICE/manifest.json" <<EOF

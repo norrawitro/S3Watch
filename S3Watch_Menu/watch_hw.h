@@ -35,7 +35,20 @@
 #define ADDR_TOUCH 0x38                  // FT3168
 #define ADDR_ES7210 0x40
 
-extern Arduino_CO5300 *gfx;
+// จอ CO5300: เขียนช่วงที่กว้างเป็นเลขคี่ (เส้น 1 px / จุด) ไม่ขึ้นจอ — ตัวอย่างผู้ผลิตปัดพิกัดเป็นคู่ (rounder_event_cb ใน 05_LVGL_AXP2101_ADC_Data)
+// → วาดลงหน่วยความจำ (canvas ใน PSRAM 412 KB) แล้วส่งขึ้นจอทีละแถวเต็มความกว้าง 410 px (เลขคู่) เฉพาะแถวที่เปลี่ยน
+extern Arduino_CO5300 *panel;            // จอจริง (ความสว่าง)
+extern Arduino_Canvas *gfx;              // วาดทุกอย่างที่นี่
+inline int dirtyY0 = 10000, dirtyY1 = -1;
+inline void markDirty(int y0, int y1) { if (y0 < dirtyY0) dirtyY0 = y0; if (y1 > dirtyY1) dirtyY1 = y1; }
+inline void markAll() { markDirty(0, LCD_H); }
+inline void flushDirty() {               // ส่งแถวที่เปลี่ยนขึ้นจอ (แถวเริ่มและจำนวนแถวเป็นเลขคู่)
+  if (dirtyY1 < 0) return;
+  int y0 = max(0, dirtyY0) & ~1, y1 = min(LCD_H, dirtyY1 + 1);
+  if ((y1 - y0) & 1) y1 = min(LCD_H, y1 + 1);
+  if (y1 > y0) panel->draw16bitRGBBitmap(0, y0, gfx->getFramebuffer() + (int32_t)y0 * LCD_W, LCD_W, y1 - y0);
+  dirtyY0 = 10000; dirtyY1 = -1;
+}
 
 // ---------- สี (ค่าเดียวกับ ILI9341 ของ Adafruit) ----------
 #define ILI9341_BLACK 0x0000
@@ -70,12 +83,12 @@ inline int SY(int y) { return TFT_OY + (int)lroundf(y * TFT_KY); }
 class TftShim : public Print {
  public:
   void begin() { gfx->setTextWrap(false); }
-  void fillScreen(uint16_t c) { gfx->fillScreen(c); }
-  void fillRect(int x, int y, int w, int h, uint16_t c) { gfx->fillRect(SX(x), SY(y), SX(x + w) - SX(x), SY(y + h) - SY(y), c); }
-  void drawRect(int x, int y, int w, int h, uint16_t c) { gfx->drawRect(SX(x), SY(y), SX(x + w) - SX(x), SY(y + h) - SY(y), c); }
-  void fillRoundRect(int x, int y, int w, int h, int r, uint16_t c) { gfx->fillRoundRect(SX(x), SY(y), SX(x + w) - SX(x), SY(y + h) - SY(y), r * 3 / 2, c); }
-  void drawRoundRect(int x, int y, int w, int h, int r, uint16_t c) { gfx->drawRoundRect(SX(x), SY(y), SX(x + w) - SX(x), SY(y + h) - SY(y), r * 3 / 2, c); }
-  void drawFastHLine(int x, int y, int w, uint16_t c) { gfx->drawFastHLine(SX(x), SY(y), SX(x + w) - SX(x), c); }
+  void fillScreen(uint16_t c) { gfx->fillScreen(c); markAll(); }
+  void fillRect(int x, int y, int w, int h, uint16_t c) { gfx->fillRect(SX(x), SY(y), SX(x + w) - SX(x), SY(y + h) - SY(y), c); markDirty(SY(y), SY(y + h)); }
+  void drawRect(int x, int y, int w, int h, uint16_t c) { gfx->drawRect(SX(x), SY(y), SX(x + w) - SX(x), SY(y + h) - SY(y), c); markDirty(SY(y), SY(y + h)); }
+  void fillRoundRect(int x, int y, int w, int h, int r, uint16_t c) { gfx->fillRoundRect(SX(x), SY(y), SX(x + w) - SX(x), SY(y + h) - SY(y), r * 3 / 2, c); markDirty(SY(y), SY(y + h)); }
+  void drawRoundRect(int x, int y, int w, int h, int r, uint16_t c) { gfx->drawRoundRect(SX(x), SY(y), SX(x + w) - SX(x), SY(y + h) - SY(y), r * 3 / 2, c); markDirty(SY(y), SY(y + h)); }
+  void drawFastHLine(int x, int y, int w, uint16_t c) { gfx->drawFastHLine(SX(x), SY(y), SX(x + w) - SX(x), c); markDirty(SY(y), SY(y) + 1); }
   void setTextSize(int s) { size_ = s; gfx->setTextSize(s, s * 2); }
   void setTextColor(uint16_t c) { gfx->setTextColor(c); }
   void setTextColor(uint16_t c, uint16_t bg) { gfx->setTextColor(c, bg); }
@@ -86,7 +99,7 @@ class TftShim : public Print {
     gfx->getTextBounds(s, 0, 0, &a, &b, &ww, &hh);
     *x1 = x; *y1 = y; *w = (uint16_t)(ww / TFT_KX); *h = (uint16_t)(hh / TFT_KY);
   }
-  size_t write(uint8_t c) override { return gfx->write(c); }
+  size_t write(uint8_t c) override { int y = gfx->getCursorY(); markDirty(y, y + 16 * size_); return gfx->write(c); }
   using Print::write;
  private:
   int size_ = 1;

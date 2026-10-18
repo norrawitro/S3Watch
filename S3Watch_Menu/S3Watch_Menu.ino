@@ -70,7 +70,8 @@ int netIdx = 0;                          // วงที่กำลังลอ
 
 I2SClass i2s;
 Arduino_DataBus *bus = new Arduino_ESP32QSPI(LCD_CS, LCD_SCLK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
-Arduino_CO5300 *gfx = new Arduino_CO5300(bus, LCD_RST, 0, LCD_W, LCD_H, LCD_COL_OFF, 0, 0, 0);
+Arduino_CO5300 *panel = new Arduino_CO5300(bus, LCD_RST, 0, LCD_W, LCD_H, LCD_COL_OFF, 0, 0, 0);
+Arduino_Canvas *gfx = new Arduino_Canvas(LCD_W, LCD_H, panel);   // วาดใน PSRAM แล้วส่งทีละแถว (watch_hw.h)
 TftShim tft;                             // วาดด้วยพิกัด 320×240 แบบ C28P
 SensorPCF85063 rtc;
 SensorQMI8658 imu;                       // IMU 6 แกน + นับก้าว (ค่าตามตัวอย่าง SensorLib QMI8658_PedometerExample)
@@ -416,7 +417,7 @@ void drawRd2Status(const Rd1Frame &f, const Rd2Live &r) {
 // ไม่แตะจอ 5 นาที → นาฬิกาเต็มจอ · งานเบื้องหลัง (อัดเสียง / RD1 LOG / RD2 วิเคราะห์เสียง) ทำต่อ ไม่หยุด
 // ใช้วิธีสลับ page เป็น P_SAVER: ทุกฟังก์ชันวาดเช็ก page อยู่แล้ว → ไม่วาดทับนาฬิกา แต่งานเสียงยังวิ่ง
 // แตะจอครั้งแรก = ปลุกกลับหน้าเดิมเท่านั้น (ไม่กดปุ่มที่อยู่ตรงนั้น)
-const uint32_t SAVER_AFTER_MS = 5UL * 60 * 1000;
+const uint32_t SAVER_AFTER_MS = 20UL * 1000;   // [ผู้ใช้สั่ง 2026-10-19] ไม่แตะจอ 20 วิ → นาฬิกา (เดิม 5 นาที)
 uint32_t lastTouchMs = 0;
 
 // [ผู้ใช้สั่ง 2026-10-18 สำหรับนาฬิกา] หน้าปัดเข็มเส้นหนา 3 px บนพื้นดำ อัปเดตทุกนาที
@@ -451,6 +452,7 @@ void drawSaver(bool full) {              // วาดใหม่เฉพาะ
   handLine((t.tm_hour % 12) * 30 + t.tm_min * 0.5f, 85, ILI9341_WHITE);
   handLine(t.tm_min * 6, 130, ILI9341_WHITE);
   faceH = t.tm_hour; faceM = t.tm_min;
+  markAll(); flushDirty();                // ส่งขึ้นจอทันที (ก่อนหลับ)
 }
 
 void saverOn() {                         // งานเบื้องหลังวิ่งอยู่: นาฬิกา (ไม่หลับ)
@@ -474,7 +476,7 @@ void deepSaver() {                       // ว่าง: หลับจนก�
   ArduinoOTA.end(); WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
   i2s.end(); es7210Stop();
   page = P_SAVER;
-  gfx->setBrightness(120);
+  panel->setBrightness(120);
   drawSaver(true);
   pwrPressed();                          // ล้างการกดที่พาเข้าโหมดนี้
   for (;;) {
@@ -1002,7 +1004,7 @@ void stopAll() {
     Serial.printf("RD1 %u frames  avg %u us  max %u us per 20 ms\n", rd1Len,
                   rd1Len ? rd1SumUs / rd1Len : 0, rd1MaxUs);
     drawStatus(); tft.setTextSize(2); tft.setTextColor(ILI9341_YELLOW);
-    tft.setCursor(4, 6); tft.print("SAVING...   ");
+    tft.setCursor(4, 6); tft.print("SAVING...   "); flushDirty();
     saveRecording();
     if (!sdOk) Serial.println("saved in PSRAM (no SD)");
   } else if (state == RECM) {
@@ -1039,7 +1041,7 @@ void otaSetup() {
     Serial.println("OTA start");
     tft.fillScreen(ILI9341_BLACK);
     tft.setTextSize(3); tft.setTextColor(ILI9341_CYAN);
-    tft.setCursor(60, 60); tft.print("OTA UPDATE");
+    tft.setCursor(60, 60); tft.print("OTA UPDATE"); flushDirty();
     rgbLedWrite(PIN_RGB, 0, 0, 40);
   });
   ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
@@ -1051,14 +1053,15 @@ void otaSetup() {
     tft.drawRect(20, 120, 280, 24, ILI9341_WHITE);
     tft.setTextSize(2); tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
     tft.setCursor(130, 160); tft.printf("%3d %%", pct);
+    flushDirty();
   });
   ArduinoOTA.onEnd([]() {
     Serial.println("OTA done -> restart");
-    tft.setCursor(80, 190); tft.setTextColor(ILI9341_GREEN); tft.print("DONE, restart");
+    tft.setCursor(80, 190); tft.setTextColor(ILI9341_GREEN); tft.print("DONE, restart"); flushDirty();
   });
   ArduinoOTA.onError([](ota_error_t e) {
     Serial.printf("OTA error %u\n", e);
-    tft.setCursor(40, 190); tft.setTextColor(ILI9341_RED); tft.printf("OTA ERROR %u", e);
+    tft.setCursor(40, 190); tft.setTextColor(ILI9341_RED); tft.printf("OTA ERROR %u", e); flushDirty();
     delay(2000);
     redrawAll();
   });
@@ -1117,6 +1120,7 @@ void wifiOff() {
 void pullSay(const char *msg) {
   Serial.printf("UPDATE: %s\n", msg);
   wifiMsg(ILI9341_MAGENTA, msg);
+  flushDirty();                          // ระหว่าง UPDATE ไม่ผ่าน loop → ส่งขึ้นจอเอง
 }
 
 void pullProgress(int pct) {             // ใช้แถบระดับเสียงเป็นแถบดาวน์โหลด
@@ -1124,6 +1128,7 @@ void pullProgress(int pct) {             // ใช้แถบระดับเ
   tft.fillRect(4 + pct * 230 / 100, 40, 230 - pct * 230 / 100, 24, ILI9341_DARKGREY);
   tft.setTextSize(2); tft.setTextColor(ILI9341_YELLOW, ILI9341_BLACK);
   tft.setCursor(240, 44); tft.printf("%3d%%", pct);
+  flushDirty();
 }
 
 void runPull() {
@@ -1233,7 +1238,7 @@ void onTouch(int x, int y) {
         static const uint8_t LV[] = {60, 120, 160, 220, 255};
         int k = 0; while (k < 5 && LV[k] <= brightness) k++;
         brightness = LV[k % 5];
-        gfx->setBrightness(brightness); prefs.putUChar("bright", brightness);
+        panel->setBrightness(brightness); prefs.putUChar("bright", brightness);
         drawBtn(B_USB, false);
         break;
       }
@@ -1243,7 +1248,7 @@ void onTouch(int x, int y) {
           Serial.println("RESET by touch");
           tft.fillScreen(ILI9341_BLACK);
           tft.setTextSize(3); tft.setTextColor(ILI9341_ORANGE);
-          tft.setCursor(70, 108); tft.print("RESTART...");
+          tft.setCursor(70, 108); tft.print("RESTART..."); flushDirty();
           Serial.flush();
           delay(300);
           ESP.restart();
@@ -1290,7 +1295,7 @@ void setup() {
   tft.begin();
   prefs.begin("rd0", false);
   brightness = prefs.getUChar("bright", 160);
-  gfx->setBrightness(brightness);
+  panel->setBrightness(brightness);
 
   SD_MMC.setPins(SD_CLK, SD_CMD, SD_D0); // 1 บิต ตามตัวอย่างผู้ผลิต
   sdOk = SD_MMC.begin("/sdcard", true);
@@ -1488,5 +1493,7 @@ void loop() {
       }
       break;
   }
+  static uint32_t lastFlush = 0;          // ส่งส่วนที่วาดขึ้นจอ ทุก 60 ms
+  if (millis() - lastFlush >= 60) { lastFlush = millis(); flushDirty(); }
   if (state == IDLE) delay(10);
 }

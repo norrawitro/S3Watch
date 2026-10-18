@@ -280,14 +280,15 @@ static void handLine(float deg, int len, uint16_t c) {   // เส้นกว�
   int x = FACE_CX + lroundf(len * sinf(a)), y = FACE_CY - lroundf(len * cosf(a));
   gfx->drawLine(FACE_CX, FACE_CY, x, y, c);
   gfx->drawLine(FACE_CX + 1, FACE_CY, x + 1, y, c);
+  gfx->drawLine(FACE_CX, FACE_CY + 1, x, y + 1, c);   // เส้นหนา 3 px (ผู้ใช้: 2 px บาง+มืดเกินจนมองไม่เห็น)
 }
 static void faceTicks() {
   for (int i = 0; i < 12; i++) {
     float a = i * 30 * PI / 180.0f;
     int in = (i % 3 == 0) ? FACE_R - 16 : FACE_R - 8;
-    for (int w = 0; w < 2; w++)
+    for (int w = 0; w < 3; w++)
       gfx->drawLine(FACE_CX + w + lroundf(in * sinf(a)), FACE_CY - lroundf(in * cosf(a)),
-                    FACE_CX + w + lroundf(FACE_R * sinf(a)), FACE_CY - lroundf(FACE_R * cosf(a)), RGB565_DARKGREY);
+                    FACE_CX + w + lroundf(FACE_R * sinf(a)), FACE_CY - lroundf(FACE_R * cosf(a)), RGB565_WHITE);
   }
 }
 static void nowHM(int &h, int &m) {
@@ -300,7 +301,7 @@ static void enterSaver() {
   WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
   i2s.end(); es7210Stop();
   gfx->fillScreen(RGB565_BLACK);
-  gfx->setBrightness(60);
+  gfx->setBrightness(120);
   faceTicks();
   int lh = -1, lm = -1;
   pwrPressed();                          // ล้างการกดที่ค้างอยู่ (ปุ่มที่พาเข้าโหมดนี้)
@@ -442,6 +443,7 @@ void loop() {
     int c = Serial.read();
     if (c == 't') selfTest();            // พิมพ์ t = ทดสอบ RD1 ในตัวซ้ำ
     if (c == 'u') doUpdate();            // พิมพ์ u = UPDATE
+    if (c == 's') enterSaver();          // พิมพ์ s = เข้าโหมดประหยัดทันที (ทดสอบ)
   }
   if (digitalRead(PIN_BOOT) == LOW) doUpdate();   // กดปุ่ม BOOT = UPDATE
   size_t got = i2s.readBytes((char *)st, sizeof(st));
@@ -466,7 +468,10 @@ void loop() {
   static uint32_t lastTouch = millis();
   if (millis() - lastDraw >= 100) {
     lastDraw = millis();
-    if (touched()) lastTouch = millis();
+    if (touched()) {
+      if (millis() - lastTouch > 2000) Serial.printf("[touch] (idle was %lu s)\n", (unsigned long)((millis() - lastTouch) / 1000));
+      lastTouch = millis();
+    }
     if (millis() - lastTouch >= IDLE_MS || pwrPressed()) enterSaver();   // ไม่แตะ 5 นาที หรือกด PWR → โหมดประหยัด
     drawBars(f, rd2);
     drawTop(f, rd2, bt);

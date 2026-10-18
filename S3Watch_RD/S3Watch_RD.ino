@@ -12,7 +12,26 @@
 #include "rd2_live.h"
 #include "batt.h"
 
-#define FW_VERSION 2   // 0.3.1
+// FW_VERSION = YYMMDDHHMM ใส่ตอนคอมไพล์โดย publish_ota.sh (แบบเดียวกับ NRW_OTA ของ ES3C28P)
+#ifndef FW_VERSION
+#define FW_VERSION 0
+#endif
+// OTA: ดึงจาก repo ส่วนตัว NRW_OTA โฟลเดอร์ s3watch/ · Wi-Fi + กุญแจอ่านอยู่ใน secrets.h (ไม่ขึ้น GitHub)
+#include <WiFi.h>
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+#ifndef WIFI_SSID
+#define WIFI_SSID ""
+#define WIFI_PASS ""
+#endif
+#ifndef WIFI_SSID2
+#define WIFI_SSID2 ""
+#define WIFI_PASS2 ""
+#endif
+#define OTA_MANIFEST "s3watch/manifest.json"
+#include "net_ota.h"
+#define PIN_BOOT 0                       // ปุ่ม BOOT (ข้างนาฬิกา) กด = UPDATE
 // ---- ขา (ผู้ผลิต) ----
 #define LCD_D0 4
 #define LCD_D1 5
@@ -174,7 +193,7 @@ static void selfTest() {
 void setup() {
   Serial.begin(115200);
   delay(1500);
-  Serial.printf("\n[S3Watch_RD] fw %d  RD1 %d bands @ %d Hz\n", FW_VERSION, RD1_BANDS, RD_SAMPLE_RATE);
+  Serial.printf("\n[S3Watch_RD] fw %lu  RD1 %d bands @ %d Hz\n", (unsigned long)FW_VERSION, RD1_BANDS, RD_SAMPLE_RATE);
   Wire.begin(I2C_SDA, I2C_SCL, 400000);
   pmuInit();
   rtcOk = rtc.begin(Wire, I2C_SDA, I2C_SCL);
@@ -190,14 +209,44 @@ void setup() {
     Serial.println("[i2s] begin failed");
   micOk = es7210Init();
   pinMode(PIN_PA, OUTPUT); digitalWrite(PIN_PA, LOW);   // ไม่ใช้ลำโพง
+  pinMode(PIN_BOOT, INPUT_PULLUP);
   Serial.printf("[mic] es7210 %s  rtc %s\n", micOk ? "ok" : "FAIL", rtcOk ? "ok" : "FAIL");
 }
 
 static int16_t st[RD_FRAME_N * 2], pcm[RD_FRAME_N];
 static uint32_t seq = 0;
 
+// ---------- UPDATE (OTA) ----------
+static void otaSay(const char *m) {
+  Serial.printf("[ota] %s\n", m);
+  gfx->fillRect(45, 160, 320, 40, RGB565_BLACK);
+  gfx->setTextSize(2); gfx->setTextColor(RGB565_YELLOW, RGB565_BLACK);
+  gfx->setCursor(55, 170); gfx->print(m);
+}
+static void otaProg(int pct) { char m[24]; snprintf(m, sizeof(m), "download %d%%", pct); otaSay(m); }
+static bool wifiTry(const char *ssid, const char *pass) {
+  if (!ssid[0]) return false;
+  WiFi.mode(WIFI_STA); WiFi.begin(ssid, pass);
+  for (int i = 0; i < 150 && WiFi.status() != WL_CONNECTED; i++) delay(100);   // รอสูงสุด 15 วิ
+  return WiFi.status() == WL_CONNECTED;
+}
+static void doUpdate() {
+  i2s.end();                             // หยุดอ่านเสียงระหว่างอัปเดต
+  otaSay("WiFi connecting...");
+  if (!wifiTry(WIFI_SSID, WIFI_PASS) && !wifiTry(WIFI_SSID2, WIFI_PASS2)) otaSay("WiFi failed (secrets.h?)");
+  else if (otaPull(otaSay, otaProg)) { delay(800); ESP.restart(); }
+  WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
+  delay(2500);
+  ESP.restart();                         // เริ่มใหม่ให้ระบบเสียงกลับมาปกติ
+}
+
 void loop() {
-  if (Serial.available() && Serial.read() == 't') selfTest();   // พิมพ์ t = ทดสอบ RD1 ในตัวซ้ำ
+  if (Serial.available()) {
+    int c = Serial.read();
+    if (c == 't') selfTest();            // พิมพ์ t = ทดสอบ RD1 ในตัวซ้ำ
+    if (c == 'u') doUpdate();            // พิมพ์ u = UPDATE
+  }
+  if (digitalRead(PIN_BOOT) == LOW) doUpdate();   // กดปุ่ม BOOT = UPDATE
   size_t got = i2s.readBytes((char *)st, sizeof(st));
   uint8_t flags = 0;
   if (got < sizeof(st)) { memset((uint8_t *)st + got, 0, sizeof(st) - got); flags |= RD1_FLAG_GAP; }

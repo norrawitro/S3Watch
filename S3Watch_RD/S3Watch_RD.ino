@@ -343,21 +343,21 @@ static String soundEventJson(uint32_t endSeq) {
 }
 static String statusJson(const Batt &bt) {
   char ts[32]; isoTime(ts, sizeof(ts));
-  char imuJs[200] = "null";
-  uint32_t steps = 0;
+  // ฟิลด์ IMU วางชั้นบนสุดเป็นตัวเลขล้วน — WKW ขึ้นกราฟเฉพาะตัวเลขชั้นบน (ซ้อนใน {} แล้วไม่ขึ้นกราฟ)
+  char imuJs[220] = "";
   if (imuOk) {
     float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0;
     imu.getAccelerometer(ax, ay, az); imu.getGyroscope(gx, gy, gz);
-    steps = imu.getPedometerCounter();
-    snprintf(imuJs, sizeof(imuJs), "{\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.1f,\"gy\":%.1f,\"gz\":%.1f,\"temp_c\":%.1f}",
-             ax, ay, az, gx, gy, gz, imu.getTemperature_C());
+    snprintf(imuJs, sizeof(imuJs),
+             ",\"steps\":%lu,\"acc_x\":%.3f,\"acc_y\":%.3f,\"acc_z\":%.3f,\"gyro_x\":%.1f,\"gyro_y\":%.1f,\"gyro_z\":%.1f,\"imu_temp_c\":%.1f",
+             (unsigned long)imu.getPedometerCounter(), ax, ay, az, gx, gy, gz, imu.getTemperature_C());
   }
   char buf[560];
   snprintf(buf, sizeof(buf),
     "{\"src\":\"s3watch\",\"fw\":%lu,\"type\":\"status\"%s%s%s,\"batt_v\":%.2f,\"batt_pct\":%d,\"sd_free_mb\":0,\"rssi\":%d,\"uptime_s\":%lu,"
-    "\"charging\":%s,\"steps\":%lu,\"imu\":%s}",
+    "\"charging\":%d%s}",
     (unsigned long)FW_VERSION, ts[0] ? ",\"ts\":\"" : "", ts, ts[0] ? "\"" : "", bt.mv / 1000.0f, bt.pct,
-    (int)WiFi.RSSI(), (unsigned long)(millis() / 1000), bt.charging ? "true" : "false", (unsigned long)steps, imuJs);
+    (int)WiFi.RSSI(), (unsigned long)(millis() / 1000), bt.charging ? 1 : 0, imuJs);
   return String(buf);
 }
 // Wi-Fi เปิดค้างเมื่อมี WKW key — หลุดแล้วต่อใหม่ทุก 30 วิ (สลับวงหลัก/วงสำรอง)
